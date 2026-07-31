@@ -110,7 +110,11 @@ class XIQ:
         ``raw=True`` returns bytes, ``return_location=True`` returns the
         Location header (long-running operations).
         """
-        url = self.base_url + "/" + path.lstrip("/")
+        # absolute URLs pass through untouched (e.g. LRO Location URLs)
+        if path.startswith(("http://", "https://")):
+            url = path
+        else:
+            url = self.base_url + "/" + path.lstrip("/")
         last_exc: Exception | None = None
         response: requests.Response | None = None
 
@@ -215,6 +219,10 @@ class XIQ:
         return self._request(
             "POST", path, json=json, params=params, files=files, return_location=True
         )
+
+    def check_lro(self, url: str) -> Any:
+        """Poll a long-running operation's Location URL from :meth:`post_lro`."""
+        return self._request("GET", url)
 
     def paged(
         self, path: str, params: dict[str, Any] | None = None, *, limit: int = DEFAULT_PAGE_SIZE

@@ -11,7 +11,7 @@ Python client for the ExtremeCloud IQ API.
 ## Install
 
 ```bash
-pip install xiq-client            # from your package index once published
+pip install xiq-client
 pip install "xiq-client[dotenv]"  # with .env support
 ```
 
@@ -32,7 +32,6 @@ Resolved in order:
 
 1. Arguments — `XIQ(token="...")`, or `username=`/`password=` (legacy login).
 2. Environment — `XIQ_TOKEN` (preferred), or `XIQ_USERNAME`/`XIQ_PASSWORD`.
-   Use these in CI, cron, and containers.
 3. A `.env` file, for local use. Needs the dotenv extra; never overrides real
    environment variables:
 
@@ -42,8 +41,7 @@ Resolved in order:
    ```
 
    `.env` is found from the current working directory, not the script's
-   directory — for cron, set real env vars or call `dotenv.load_dotenv(path)`
-   before constructing `XIQ()`.
+   directory
 
 Syncing between two VIQs? Pass tokens explicitly: `XIQ(token=src)`, `XIQ(token=dst)`.
 
@@ -98,13 +96,3 @@ xiq.post_lro("/account/viq/export")        # returns the LRO Location URL
 | `xiq.selectManagedAccount()` + `switchAccount`  | `xiq.external_accounts()` + `xiq.switch_account(viq_id)` |
 | hand-rolled pagination loops                    | any `xiq.paged(path)` iterator              |
 | pandas DataFrames from some methods             | plain `dict` / iterators                    |
-
-## Development
-
-```bash
-pip install -e ".[dev]"
-ruff check src
-```
-
-CI runs lint + an install/import check on Python 3.9–3.13
-(`.github/workflows/ci.yml`).
