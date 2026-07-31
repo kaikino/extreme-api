@@ -1,7 +1,6 @@
 # xiq-client
 
-Python client for the ExtremeCloud IQ API. One tested implementation of what
-the `xiq_api.py` copies in the SA script repos each did by hand:
+Python client for the ExtremeCloud IQ API.
 
 - Token auth by default (`XIQ_TOKEN`), `POST /login` as legacy fallback
 - Timeouts on every request (connect 10 s / read 60 s)
@@ -48,8 +47,6 @@ Resolved in order:
 
 Syncing between two VIQs? Pass tokens explicitly: `XIQ(token=src)`, `XIQ(token=dst)`.
 
-Never commit a `.env` (it's gitignored); `.env.example` is the template.
-
 ## Extreme Platform ONE
 
 The XIQ API is hosted unchanged on Platform ONE — same paths, different base URL:
@@ -73,16 +70,21 @@ except APIError as e:
     print(e.status_code, e.body) # 404, 429, ...; None = retries exhausted
 ```
 
-## Endpoints without a named method
+## Coverage
 
-Named methods exist only where a migrated script has verified the payload
-shape. Everything else goes through the escape hatches, with the same
+Named methods cover accounts/VIQ (backup, export, import, download), devices (onboard, CLI, reboot, rename,
+locations, policy assign), locations/sites/buildings/floors (incl. floorplan
+upload), end users/PPSK/PCGs, network policies and deployments, SSIDs, CCGs,
+radio profiles, firewall objects, admin users, CDGs, and audit logs. Payload
+shapes come from the scripts themselves.
+
+Anything else goes through the escape hatches, with the same
 timeout/retry/auth behavior:
 
 ```python
-xiq.get("/logs/audit", order="DESC")
-xiq.paged("/devices", {"views": "FULL"})   # auto-paginated iterator
-xiq.post("/devices/:onboard", json={...})
+xiq.get("/alerts", order="DESC")
+xiq.paged("/clients/active")               # auto-paginated iterator
+xiq.post_lro("/account/viq/export")        # returns the LRO Location URL
 ```
 
 ## Migrating a script from the copied `xiq_api.py`
@@ -90,9 +92,9 @@ xiq.post("/devices/:onboard", json={...})
 | Old (`from app.xiq_api import XIQ`)             | New (`from xiq_client import XIQ`)          |
 | ----------------------------------------------- | ------------------------------------------- |
 | `XIQ(user_name=u, password=p)`                  | `XIQ()` + `XIQ_TOKEN` env var               |
-| `xiq.collectDevices(pageSize=100)`              | `list(xiq.paged("/devices", {"views": "FULL"}))` |
+| `xiq.collectDevices(pageSize=100)`              | `list(xiq.devices(limit=100))`              |
 | `xiq.collectNetworkPolicies(pageSize)`          | `list(xiq.network_policies())`              |
-| `xiq.changeNetworkPolicy(payload)`              | `xiq.post("/devices/network-policy/:assign", json=payload)` |
+| `xiq.changeNetworkPolicy(payload)`              | `xiq.assign_network_policy(payload)`        |
 | `xiq.selectManagedAccount()` + `switchAccount`  | `xiq.external_accounts()` + `xiq.switch_account(viq_id)` |
 | hand-rolled pagination loops                    | any `xiq.paged(path)` iterator              |
 | pandas DataFrames from some methods             | plain `dict` / iterators                    |

@@ -10,7 +10,7 @@ import os
 import random
 import time
 from collections.abc import Iterator, Sequence
-from typing import Any, Callable
+from typing import Any, BinaryIO, Callable
 
 import requests
 
@@ -98,9 +98,18 @@ class XIQ:
         *,
         params: dict | None = None,
         json: Any = None,
+        data: Any = None,
+        files: dict | None = None,
+        raw: bool = False,
+        return_location: bool = False,
         expect_json: bool = True,
     ) -> Any:
-        """Perform a request with retries; return parsed JSON (or text)."""
+        """Perform a request with retries; return the decoded response.
+
+        ``data`` sends a raw (non-JSON) body, ``files`` a multipart upload,
+        ``raw=True`` returns bytes, ``return_location=True`` returns the
+        Location header (long-running operations).
+        """
         url = self.base_url + "/" + path.lstrip("/")
         last_exc: Exception | None = None
         response: requests.Response | None = None
@@ -108,7 +117,8 @@ class XIQ:
         for attempt in range(1, self.max_retries + 1):
             try:
                 response = self.session.request(
-                    method, url, params=params, json=json, timeout=self.timeout
+                    method, url, params=params, json=json, data=data,
+                    files=files, timeout=self.timeout,
                 )
             except (requests.ConnectionError, requests.Timeout) as exc:
                 last_exc = exc
@@ -126,11 +136,11 @@ class XIQ:
                 )
                 self._backoff(attempt, response.headers.get("Retry-After"))
                 continue
-            return self._finish(method, url, response, expect_json)
+            return self._finish(method, url, response, expect_json, raw, return_location)
 
         if response is not None:
             # retries exhausted on a retryable status
-            return self._finish(method, url, response, expect_json)
+            return self._finish(method, url, response, expect_json, raw, return_location)
         raise APIError(
             f"{method} {url} failed after {self.max_retries} attempts: {last_exc}",
             method=method,
@@ -149,10 +159,20 @@ class XIQ:
         self._sleep(min(delay, MAX_BACKOFF_SECONDS))
 
     def _finish(
-        self, method: str, url: str, response: requests.Response, expect_json: bool
+        self,
+        method: str,
+        url: str,
+        response: requests.Response,
+        expect_json: bool,
+        raw: bool = False,
+        return_location: bool = False,
     ) -> Any:
         status = response.status_code
         if 200 <= status < 300:
+            if return_location:
+                return response.headers.get("Location")
+            if raw:
+                return response.content
             if not expect_json or not response.content:
                 return response.text or None
             return response.json()
@@ -182,6 +202,19 @@ class XIQ:
 
     def delete(self, path: str, **params: Any) -> Any:
         return self._request("DELETE", path, params=params or None)
+
+    def post_lro(
+        self,
+        path: str,
+        json: Any = None,
+        *,
+        params: dict | None = None,
+        files: dict | None = None,
+    ) -> str | None:
+        """POST a long-running operation; returns the Location URL to poll."""
+        return self._request(
+            "POST", path, json=json, params=params, files=files, return_location=True
+        )
 
     def paged(
         self, path: str, params: dict[str, Any] | None = None, *, limit: int = DEFAULT_PAGE_SIZE
@@ -261,6 +294,29 @@ class XIQ:
             raise AuthenticationError("Account switch returned no access_token")
         self._set_token(token)
 
+    def viq_info(self) -> dict:
+        return self.get("/account/viq")
+
+    def viq_backup(self) -> Any:
+        return self.post("/account/viq/:backup")
+
+    def viq_export(self) -> str | None:
+        """Start a VIQ export; returns the LRO Location URL to poll."""
+        return self.post_lro("/account/viq/export")
+
+    def viq_download(self, report_name: str) -> bytes:
+        return self._request(
+            "GET", "/account/viq/download", params={"reportName": report_name}, raw=True
+        )
+
+    def viq_import(
+        self, file: BinaryIO, filename: str, *, resend_user_notifications: bool = False
+    ) -> str | None:
+        """Import a VIQ backup file; returns the LRO Location URL to poll."""
+        params = {"resendUserNotifications": "true"} if resend_user_notifications else None
+        files = {"importFile": (filename, file, "text/plain")}
+        return self.post_lro("/account/viq/import", params=params, files=files)
+
     # ------------------------------------------------------------------
     # devices
     # ------------------------------------------------------------------
@@ -280,21 +336,74 @@ class XIQ:
     def device(self, device_id: int) -> dict:
         return self.get(f"/devices/{device_id}")
 
+    def delete_device(self, device_id: int) -> None:
+        self.delete(f"/devices/{device_id}")
+
+    def delete_devices(self, device_ids: Sequence[int]) -> Any:
+        return self.post("/devices/:delete", json={"ids": list(device_ids)})
+
+    def unmanage_devices(self, device_ids: Sequence[int]) -> Any:
+        return self.post("/devices/:unmanage", json={"ids": list(device_ids)})
+
+    def onboard_devices(self, payload: dict) -> Any:
+        return self.post("/devices/:onboard", json=payload)
+
+    def advanced_onboard(self, payload: dict, *, wait: bool = True) -> Any:
+        """Advanced onboard. ``wait=False`` runs async and returns the LRO URL."""
+        params = {"async": "false" if wait else "true"}
+        if wait:
+            return self._request(
+                "POST", "/devices/:advanced-onboard", json=payload, params=params
+            )
+        return self.post_lro("/devices/:advanced-onboard", json=payload, params=params)
+
     def reboot_device(self, device_id: int) -> None:
         self.post(f"/devices/{device_id}/:reboot")
 
-    # untested
-    #
-    # def assign_network_policy(self, policy_id: int, device_ids: Sequence[int]) -> dict:
-    #     return self.post(
-    #         "/devices/network-policy/:assign",
-    #         json={"network_policy_id": policy_id, "devices": {"ids": list(device_ids)}},
-    #     )
-    #
-    # def send_cli(self, device_ids: Sequence[int], commands: Sequence[str]) -> dict:
-    #     return self.post(
-    #         "/devices/:cli", json={"devices": {"ids": list(device_ids)}, "clis": list(commands)}
-    #     )
+    def send_cli(self, device_ids: Sequence[int], commands: Sequence[str]) -> dict:
+        return self._request(
+            "POST",
+            "/devices/:cli",
+            params={"async": "false"},
+            json={"devices": {"ids": list(device_ids)}, "clis": list(commands)},
+        )
+
+    def set_hostname(self, device_id: int, hostname: str) -> Any:
+        # the new name goes in the query string, not the body
+        return self.put(f"/devices/{device_id}/hostname", hostname=hostname)
+
+    def set_description(self, device_id: int, description: str) -> Any:
+        # the API takes the bare string as the body, not JSON
+        return self._request("PUT", f"/devices/{device_id}/description", data=description)
+
+    def device_location(self, device_id: int) -> dict:
+        return self.get(f"/devices/{device_id}/location")
+
+    def set_device_location(self, device_id: int, payload: dict) -> Any:
+        return self.put(f"/devices/{device_id}/location", json=payload)
+
+    def assign_location(self, payload: dict) -> Any:
+        return self.post("/devices/location/:assign", json=payload)
+
+    def device_network_policy(self, device_id: int) -> dict:
+        return self.get(f"/devices/{device_id}/network-policy")
+
+    def set_device_network_policy(self, device_id: int, payload: dict) -> Any:
+        return self.put(f"/devices/{device_id}/network-policy", json=payload)
+
+    def assign_network_policy(self, payload: dict) -> Any:
+        return self.post("/devices/network-policy/:assign", json=payload)
+
+    def device_alarms(self, device_id: int, *, limit: int = DEFAULT_PAGE_SIZE) -> Iterator[dict]:
+        return self.paged(f"/devices/{device_id}/alarms", limit=limit)
+
+    def wifi_interfaces(self, device_id: int) -> Any:
+        return self.get(f"/devices/{device_id}/interfaces/wifi")
+
+    def radio_information(
+        self, *, limit: int = DEFAULT_PAGE_SIZE, **filters: Any
+    ) -> Iterator[dict]:
+        return self.paged("/devices/radio-information", dict(filters), limit=limit)
 
     # ------------------------------------------------------------------
     # locations
@@ -302,19 +411,46 @@ class XIQ:
     def locations_tree(self, *, expand_children: bool = True) -> list[dict]:
         return self.get("/locations/tree", expandChildren=expand_children)
 
+    def init_location(self, organization: str, country: str) -> dict:
+        return self.post(
+            "/locations/:init", json={"organization": organization, "country": country}
+        )
+
+    def create_location(self, payload: dict) -> dict:
+        return self.post("/locations", json=payload)
+
+    def sites(self, *, limit: int = DEFAULT_PAGE_SIZE) -> Iterator[dict]:
+        return self.paged("/locations/site", limit=limit)
+
+    def create_site(self, payload: dict) -> dict:
+        return self.post("/locations/site", json=payload)
+
+    def update_site(self, site_id: int, payload: dict) -> dict:
+        return self.put(f"/locations/site/{site_id}", json=payload)
+
     def buildings(self, *, limit: int = DEFAULT_PAGE_SIZE) -> Iterator[dict]:
         return self.paged("/locations/building", limit=limit)
+
+    def create_building(self, payload: dict) -> dict:
+        return self.post("/locations/building", json=payload)
 
     def floors(self, *, limit: int = DEFAULT_PAGE_SIZE) -> Iterator[dict]:
         return self.paged("/locations/floor", limit=limit)
 
-    # untested
-    #
-    # def create_building(self, payload: dict) -> dict:
-    #     return self.post("/locations/building", json=payload)
-    #
-    # def create_floor(self, payload: dict) -> dict:
-    #     return self.post("/locations/floor", json=payload)
+    def create_floor(self, payload: dict) -> dict:
+        return self.post("/locations/floor", json=payload)
+
+    def upload_floorplan(
+        self, file: BinaryIO, filename: str, *, content_type: str = "image/png"
+    ) -> Any:
+        files = {"file": (filename, file, content_type), "type": content_type}
+        return self._request("POST", "/locations/floorplan", files=files)
+
+    def countries(self) -> Any:
+        return self.get("/countries")
+
+    def validate_country(self, country_code: str) -> Any:
+        return self.get(f"/countries/{country_code}/:validate")
 
     # ------------------------------------------------------------------
     # end users (PPSK) / user groups / PCGs
@@ -325,10 +461,8 @@ class XIQ:
     def create_enduser(self, payload: dict) -> dict:
         return self.post("/endusers", json=payload)
 
-    # untested
-    #
-    # def update_enduser(self, enduser_id: int, payload: dict) -> dict:
-    #     return self.put(f"/endusers/{enduser_id}", json=payload)
+    def update_enduser(self, enduser_id: int, payload: dict) -> dict:
+        return self.put(f"/endusers/{enduser_id}", json=payload)
 
     def delete_enduser(self, enduser_id: int) -> None:
         self.delete(f"/endusers/{enduser_id}")
@@ -353,24 +487,124 @@ class XIQ:
         )
 
     # ------------------------------------------------------------------
-    # network policies / CCGs
+    # network policies / deployments / SSIDs
     # ------------------------------------------------------------------
     def network_policies(self, *, limit: int = DEFAULT_PAGE_SIZE) -> Iterator[dict]:
         return self.paged("/network-policies", limit=limit)
 
+    def deploy_config(
+        self,
+        device_ids: Sequence[int],
+        *,
+        complete_update: bool = False,
+        activate_at_next_reboot: bool = False,
+        activation_delay_seconds: int = 0,
+    ) -> Any:
+        """Push a config update to devices (``POST /deployments?async=true``)."""
+        return self._request(
+            "POST",
+            "/deployments",
+            params={"async": "true"},
+            json={
+                "devices": {"ids": list(device_ids)},
+                "policy": {
+                    "enable_complete_configuration_update": complete_update,
+                    "firmware_activate_option": {
+                        "enable_activate_at_next_reboot": activate_at_next_reboot,
+                        "activation_delay_seconds": activation_delay_seconds,
+                    },
+                },
+            },
+        )
+
+    def set_psk_password(self, ssid_id: int, password: str) -> Any:
+        # the API takes the bare string as the body, not JSON
+        return self._request("PUT", f"/ssids/{ssid_id}/psk/password", data=password)
+
+    # ------------------------------------------------------------------
+    # CCGs (cloud config groups)
+    # ------------------------------------------------------------------
     def ccgs(self, *, limit: int = DEFAULT_PAGE_SIZE) -> Iterator[dict]:
         return self.paged("/ccgs", limit=limit)
 
-    # untested
-    #
-    # def create_ccg(self, payload: dict) -> dict:
-    #     return self.post("/ccgs", json=payload)
-    #
-    # def update_ccg(self, ccg_id: int, payload: dict) -> dict:
-    #     return self.put(f"/ccgs/{ccg_id}", json=payload)
+    def create_ccg(self, payload: dict) -> dict:
+        return self.post("/ccgs", json=payload)
+
+    def update_ccg(self, ccg_id: int, payload: dict) -> dict:
+        return self.put(f"/ccgs/{ccg_id}", json=payload)
 
     def delete_ccg(self, ccg_id: int) -> None:
         self.delete(f"/ccgs/{ccg_id}")
+
+    # ------------------------------------------------------------------
+    # radio profiles
+    # ------------------------------------------------------------------
+    def radio_profiles(self, *, limit: int = DEFAULT_PAGE_SIZE) -> Iterator[dict]:
+        return self.paged("/radio-profiles", limit=limit)
+
+    def radio_usage_opt(self, profile_id: int) -> dict:
+        return self.get(f"/radio-profiles/radio-usage-opt/{profile_id}")
+
+    def channel_selection(self, profile_id: int) -> dict:
+        return self.get(f"/radio-profiles/channel-selection/{profile_id}")
+
+    # ------------------------------------------------------------------
+    # firewall / network objects
+    # ------------------------------------------------------------------
+    def ip_firewall_policies(self, *, limit: int = DEFAULT_PAGE_SIZE) -> Iterator[dict]:
+        return self.paged("/ip-firewall-policies", limit=limit)
+
+    def create_ip_firewall_policy(self, payload: dict) -> dict:
+        return self.post("/ip-firewall-policies", json=payload)
+
+    def update_ip_firewall_policy(self, policy_id: int, payload: dict) -> dict:
+        return self.put(f"/ip-firewall-policies/{policy_id}", json=payload)
+
+    def delete_ip_firewall_policy(self, policy_id: int) -> None:
+        self.delete(f"/ip-firewall-policies/{policy_id}")
+
+    def l3_address_profiles(
+        self, *, limit: int = DEFAULT_PAGE_SIZE, **filters: Any
+    ) -> Iterator[dict]:
+        return self.paged("/l3-address-profiles", dict(filters), limit=limit)
+
+    def create_l3_address_profile(self, payload: dict) -> dict:
+        return self.post("/l3-address-profiles", json=payload)
+
+    def network_services(
+        self, *, limit: int = DEFAULT_PAGE_SIZE, **filters: Any
+    ) -> Iterator[dict]:
+        return self.paged("/network-services", dict(filters), limit=limit)
+
+    # ------------------------------------------------------------------
+    # admin users / credential distribution groups
+    # ------------------------------------------------------------------
+    def users(self, *, limit: int = DEFAULT_PAGE_SIZE) -> Iterator[dict]:
+        return self.paged("/users", limit=limit)
+
+    def user(self, user_id: int) -> dict:
+        return self.get(f"/users/{user_id}")
+
+    def create_user(self, payload: dict) -> dict:
+        return self.post("/users", json=payload)
+
+    def external_users(self, *, limit: int = DEFAULT_PAGE_SIZE) -> Iterator[dict]:
+        return self.paged("/users/external", limit=limit)
+
+    def create_external_user(self, payload: dict) -> dict:
+        return self.post("/users/external", json=payload)
+
+    def cdgs(self, *, limit: int = DEFAULT_PAGE_SIZE) -> Iterator[dict]:
+        return self.paged("/credential-distribution-groups", limit=limit)
+
+    def update_cdg(self, cdg_id: int, payload: dict) -> dict:
+        return self.put(f"/credential-distribution-groups/{cdg_id}", json=payload)
+
+    # ------------------------------------------------------------------
+    # logs
+    # ------------------------------------------------------------------
+    def audit_logs(self, *, limit: int = DEFAULT_PAGE_SIZE, **filters: Any) -> Iterator[dict]:
+        return self.paged("/logs/audit", dict(filters), limit=limit)
 
 
 __all__ = [
