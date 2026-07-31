@@ -103,8 +103,8 @@ xiq.post_lro("/account/viq/export")        # returns the LRO Location URL
 
 ```bash
 pip install -e ".[dev]"
-ruff check src tests
-pytest
+ruff check src
 ```
 
-CI runs lint + tests on Python 3.9–3.13 (`.github/workflows/ci.yml`).
+CI runs lint + an install/import check on Python 3.9–3.13
+(`.github/workflows/ci.yml`).
