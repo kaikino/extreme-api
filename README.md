@@ -26,6 +26,8 @@ for user in xiq.endusers(user_group_ids=42):
     print(user["user_name"])
 ```
 
+Full method → endpoint table: [METHODS.md](METHODS.md).
+
 ## Credentials
 
 Resolved in order:
