@@ -1,0 +1,108 @@
+# xiq-client
+
+Python client for the ExtremeCloud IQ API. One tested implementation of what
+the `xiq_api.py` copies in the SA script repos each did by hand:
+
+- Token auth by default (`XIQ_TOKEN`), `POST /login` as legacy fallback
+- Timeouts on every request (connect 10 s / read 60 s)
+- Retries with backoff; honors `Retry-After` on 429/503
+- Automatic pagination — list methods return iterators
+- Works against Extreme Platform ONE with a `base_url` switch
+
+## Install
+
+```bash
+pip install xiq-client            # from your package index once published
+pip install "xiq-client[dotenv]"  # with .env support
+```
+
+## Quickstart
+
+```python
+from xiq_client import XIQ
+
+xiq = XIQ()  # token from the XIQ_TOKEN environment variable
+
+for user in xiq.endusers(user_group_ids=42):
+    print(user["user_name"])
+```
+
+## Credentials
+
+Resolved in order:
+
+1. Arguments — `XIQ(token="...")`, or `username=`/`password=` (legacy login).
+2. Environment — `XIQ_TOKEN` (preferred), or `XIQ_USERNAME`/`XIQ_PASSWORD`.
+   Use these in CI, cron, and containers.
+3. A `.env` file, for local use. Needs the dotenv extra; never overrides real
+   environment variables:
+
+   ```bash
+   pip install "xiq-client[dotenv]"
+   cp .env.example .env   # then fill in XIQ_TOKEN
+   ```
+
+   `.env` is found from the current working directory, not the script's
+   directory — for cron, set real env vars or call `dotenv.load_dotenv(path)`
+   before constructing `XIQ()`.
+
+Syncing between two VIQs? Pass tokens explicitly: `XIQ(token=src)`, `XIQ(token=dst)`.
+
+Never commit a `.env` (it's gitignored); `.env.example` is the template.
+
+## Extreme Platform ONE
+
+The XIQ API is hosted unchanged on Platform ONE — same paths, different base URL:
+
+```python
+from xiq_client import XIQ, PLATFORM_ONE_BASE_URL
+
+xiq = XIQ(token="...", base_url=PLATFORM_ONE_BASE_URL)
+```
+
+## Errors
+
+```python
+from xiq_client import APIError, AuthenticationError, XIQError
+
+try:
+    xiq.get("/devices/999")
+except AuthenticationError:      # bad/expired token (401/403)
+    ...
+except APIError as e:
+    print(e.status_code, e.body) # 404, 429, ...; None = retries exhausted
+```
+
+## Endpoints without a named method
+
+Named methods exist only where a migrated script has verified the payload
+shape. Everything else goes through the escape hatches, with the same
+timeout/retry/auth behavior:
+
+```python
+xiq.get("/logs/audit", order="DESC")
+xiq.paged("/devices", {"views": "FULL"})   # auto-paginated iterator
+xiq.post("/devices/:onboard", json={...})
+```
+
+## Migrating a script from the copied `xiq_api.py`
+
+| Old (`from app.xiq_api import XIQ`)             | New (`from xiq_client import XIQ`)          |
+| ----------------------------------------------- | ------------------------------------------- |
+| `XIQ(user_name=u, password=p)`                  | `XIQ()` + `XIQ_TOKEN` env var               |
+| `xiq.collectDevices(pageSize=100)`              | `list(xiq.paged("/devices", {"views": "FULL"}))` |
+| `xiq.collectNetworkPolicies(pageSize)`          | `list(xiq.network_policies())`              |
+| `xiq.changeNetworkPolicy(payload)`              | `xiq.post("/devices/network-policy/:assign", json=payload)` |
+| `xiq.selectManagedAccount()` + `switchAccount`  | `xiq.external_accounts()` + `xiq.switch_account(viq_id)` |
+| hand-rolled pagination loops                    | any `xiq.paged(path)` iterator              |
+| pandas DataFrames from some methods             | plain `dict` / iterators                    |
+
+## Development
+
+```bash
+pip install -e ".[dev]"
+ruff check src tests
+pytest
+```
+
+CI runs lint + tests on Python 3.9–3.13 (`.github/workflows/ci.yml`).
