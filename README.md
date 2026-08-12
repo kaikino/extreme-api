@@ -57,6 +57,12 @@ from xiq_client import XIQ, PLATFORM_ONE_BASE_URL
 xiq = XIQ(token="...", base_url=PLATFORM_ONE_BASE_URL)
 ```
 
+Tokens are **not** interchangeable between the platforms and are created
+separately: XIQ tokens (JWTs) under XIQ → Administration → Integrations,
+Platform ONE API keys (`extr_sk_...`) under Platform ONE → Administration &
+Settings → Integrations. The client logs a warning if the token format doesn't
+match the base URL it's pointed at.
+
 ## Errors
 
 ```python

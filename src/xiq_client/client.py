@@ -76,6 +76,7 @@ class XIQ:
         username = username or os.environ.get(ENV_USERNAME) or None
         password = password or os.environ.get(ENV_PASSWORD) or None
         if token:
+            self._warn_token_platform_mismatch(token)
             self._set_token(token)
         elif username and password:
             self._login(username, password)
@@ -90,6 +91,25 @@ class XIQ:
     # ------------------------------------------------------------------
     def _set_token(self, token: str) -> None:
         self.session.headers["Authorization"] = "Bearer " + token
+
+    def _warn_token_platform_mismatch(self, token: str) -> None:
+        # XIQ and Platform ONE credentials are created separately and are not
+        # interchangeable: Platform ONE API keys start with "extr_sk_", classic
+        # XIQ tokens are JWTs. Catch obvious cross-wiring before the first 401.
+        is_p1_key = token.startswith("extr_sk_")
+        is_xiq_jwt = token.startswith("ey") and token.count(".") == 2
+        on_p1 = self.base_url == PLATFORM_ONE_BASE_URL
+        if is_p1_key and not on_p1:
+            logger.warning(
+                "token looks like a Platform ONE API key (extr_sk_...) but base_url "
+                "is %s; pass base_url=PLATFORM_ONE_BASE_URL or use an XIQ token",
+                self.base_url,
+            )
+        elif is_xiq_jwt and on_p1:
+            logger.warning(
+                "token looks like a classic XIQ token (JWT) but base_url is the "
+                "Platform ONE endpoint; Platform ONE API keys start with extr_sk_"
+            )
 
     def _request(
         self,
