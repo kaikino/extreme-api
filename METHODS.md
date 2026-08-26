@@ -45,7 +45,7 @@ and `xiq.post_lro(path)` + `xiq.check_lro(url)`.
 | Method | API call | Notes |
 |---|---|---|
 | `devices(views=…, location_id=…, limit=…)` | `GET (paged) /devices` | views=FULL default; location_id= and extra filters supported |
-| `device(device_id)` | `GET /devices/{device_id}` |  |
+| `device(device_id, **params)` | `GET /devices/{device_id}` | extra query params pass through (e.g. fields=CONNECTED) |
 | `delete_device(device_id)` | `DELETE /devices/{device_id}` |  |
 | `delete_devices(device_ids)` | `POST /devices/:delete` |  |
 | `unmanage_devices(device_ids)` | `POST /devices/:unmanage` |  |
@@ -62,14 +62,14 @@ and `xiq.post_lro(path)` + `xiq.check_lro(url)`.
 | `set_device_network_policy(device_id, payload)` | `PUT /devices/{device_id}/network-policy` |  |
 | `assign_network_policy(payload)` | `POST /devices/network-policy/:assign` |  |
 | `device_alarms(device_id, limit=…)` | `GET (paged) /devices/{device_id}/alarms` |  |
-| `wifi_interfaces(device_id)` | `GET /devices/{device_id}/interfaces/wifi` |  |
+| `wifi_interfaces(device_id, **params)` | `GET /devices/{device_id}/interfaces/wifi` | optional startTime / endTime |
 | `radio_information(limit=…)` | `GET (paged) /devices/radio-information` |  |
 
 ## Locations
 
 | Method | API call | Notes |
 |---|---|---|
-| `locations_tree(expand_children=…)` | `GET /locations/tree` |  |
+| `locations_tree(expand_children=…, parent_id=…)` | `GET /locations/tree` | parent_id= lists children of a site/building |
 | `init_location(organization, country)` | `POST /locations/:init` |  |
 | `create_location(payload)` | `POST /locations` |  |
 | `sites(limit=…)` | `GET (paged) /locations/site` |  |
@@ -149,5 +149,5 @@ and `xiq.post_lro(path)` + `xiq.check_lro(url)`.
 
 | Method | API call | Notes |
 |---|---|---|
-| `audit_logs(limit=…)` | `GET (paged) /logs/audit` |  |
+| `audit_logs(limit=…, startTime=…, endTime=…)` | `GET (paged) /logs/audit` | startTime and endTime (epoch ms) are required by the API |
 

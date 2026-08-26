@@ -1,12 +1,13 @@
 # xiq-client
 
-Python client for the ExtremeCloud IQ API.
+Python client for the ExtremeCloud IQ API (including Extreme Platform ONE).
 
-- Token auth by default (`XIQ_TOKEN`), `POST /login` as legacy fallback
+- Token auth by default (`XIQ_API_TOKEN`), `POST /login` as fallback
 - Timeouts on every request (connect 10 s / read 60 s)
 - Retries with backoff; honors `Retry-After` on 429/503
 - Automatic pagination — list methods return iterators
 - Works against Extreme Platform ONE with a `base_url` switch
+- Typed public methods — editors autocomplete `xiq.` after the package is installed
 
 ## Install
 
@@ -15,12 +16,18 @@ pip install xiq-client
 pip install "xiq-client[dotenv]"  # with .env support
 ```
 
+For local development against this repo (needed for editor autocomplete):
+
+```bash
+pip install -e ".[dotenv]"
+```
+
 ## Quickstart
 
 ```python
 from xiq_client import XIQ
 
-xiq = XIQ()  # token from the XIQ_TOKEN environment variable
+xiq = XIQ()  # token from the XIQ_API_TOKEN environment variable
 
 for user in xiq.endusers(user_group_ids=42):
     print(user["user_name"])
@@ -28,18 +35,23 @@ for user in xiq.endusers(user_group_ids=42):
 
 Full method → endpoint table: [METHODS.md](METHODS.md).
 
+Typing `xiq.` in VS Code, Cursor, PyCharm, or similar lists every named
+method (`devices`, `endusers`, `usergroups`, `get`, `paged`, …) from the
+type hints shipped with the package.
+
 ## Credentials
 
 Resolved in order:
 
-1. Arguments — `XIQ(token="...")`, or `username=`/`password=` (legacy login).
-2. Environment — `XIQ_TOKEN` (preferred), or `XIQ_USERNAME`/`XIQ_PASSWORD`.
+1. Arguments — `XIQ(token="...")`, or `username=`/`password=` (`POST /login`).
+2. Environment — `XIQ_API_TOKEN` (preferred), or `XIQ_USERNAME`/`XIQ_PASSWORD`.
+   Optional `XIQ_BASE_URL` selects the API host.
 3. A `.env` file, for local use. Needs the dotenv extra; never overrides real
    environment variables:
 
    ```bash
    pip install "xiq-client[dotenv]"
-   cp .env.example .env   # then fill in XIQ_TOKEN
+   cp .env.example .env   # then fill in XIQ_API_TOKEN
    ```
 
    `.env` is found from the current working directory, not the script's
@@ -47,21 +59,36 @@ Resolved in order:
 
 Syncing between two VIQs? Pass tokens explicitly: `XIQ(token=src)`, `XIQ(token=dst)`.
 
+### API tokens
+
+- Recommended: create a Platform ONE key (`extr_sk_...`) under
+**Administration & Settings > Integrations**. It works with either
+supported endpoint.
+- Alternatively, generate an XIQ token through `/login` (valid for 24
+hours) and `/auth/apitoken` (configurable expiration) with
+`usergroup:r` and `enduser` permissions. It works only with the
+default `api.extremecloudiq.com` endpoint.
+- Or set `XIQ_USERNAME` and `XIQ_PASSWORD`; the script obtains a new
+24-hour `/login` token each run.
+
+Set the selected key as `XIQ_API_TOKEN`.
+
 ## Extreme Platform ONE
 
-The XIQ API is hosted unchanged on Platform ONE — same paths, different base URL:
+The XIQ API is hosted on Platform ONE — same paths, different base URL:
 
 ```python
 from xiq_client import XIQ, PLATFORM_ONE_BASE_URL
 
-xiq = XIQ(token="...", base_url=PLATFORM_ONE_BASE_URL)
+xiq = XIQ(base_url=PLATFORM_ONE_BASE_URL)
 ```
 
-Tokens are **not** interchangeable between the platforms and are created
-separately: XIQ tokens (JWTs) under XIQ → Administration → Integrations,
-Platform ONE API keys (`extr_sk_...`) under Platform ONE → Administration &
-Settings → Integrations. The client logs a warning if the token format doesn't
-match the base URL it's pointed at.
+Or set `XIQ_BASE_URL=https://cloudapi.extremecloudiq.com/xiq/v1`.
+
+A Platform ONE key (`extr_sk_...`) works with either endpoint. Classic XIQ
+tokens from `/login` or `/auth/apitoken` work only with
+`https://api.extremecloudiq.com`. The client logs a warning if a JWT is
+pointed at the Platform ONE host.
 
 ## Errors
 
@@ -97,7 +124,7 @@ xiq.post_lro("/account/viq/export")        # returns the LRO Location URL
 
 | Old (`from app.xiq_api import XIQ`)             | New (`from xiq_client import XIQ`)          |
 | ----------------------------------------------- | ------------------------------------------- |
-| `XIQ(user_name=u, password=p)`                  | `XIQ()` + `XIQ_TOKEN` env var               |
+| `XIQ(user_name=u, password=p)`                  | `XIQ()` + `XIQ_API_TOKEN` env var           |
 | `xiq.collectDevices(pageSize=100)`              | `list(xiq.devices(limit=100))`              |
 | `xiq.collectNetworkPolicies(pageSize)`          | `list(xiq.network_policies())`              |
 | `xiq.changeNetworkPolicy(payload)`              | `xiq.assign_network_policy(payload)`        |

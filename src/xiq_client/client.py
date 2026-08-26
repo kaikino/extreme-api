@@ -23,9 +23,11 @@ XIQ_BASE_URL = "https://api.extremecloudiq.com"
 #: Extreme Platform ONE API endpoint
 PLATFORM_ONE_BASE_URL = "https://cloudapi.extremecloudiq.com/xiq/v1"
 
-ENV_TOKEN = "XIQ_TOKEN"
+ENV_TOKEN = "XIQ_API_TOKEN"
+ENV_TOKEN_LEGACY = "XIQ_TOKEN"  # accepted as a fallback; prefer XIQ_API_TOKEN
 ENV_USERNAME = "XIQ_USERNAME"
 ENV_PASSWORD = "XIQ_PASSWORD"
+ENV_BASE_URL = "XIQ_BASE_URL"
 
 DEFAULT_TIMEOUT = (10.0, 60.0)  # (connect, read) seconds
 DEFAULT_MAX_RETRIES = 5
@@ -35,15 +37,20 @@ MAX_BACKOFF_SECONDS = 60.0  # cap for Retry-After and backoff sleeps
 
 
 class XIQ:
-    """ExtremeCloud IQ API client.
+    """ExtremeCloud IQ / Extreme Platform ONE API client.
+
+    Named methods (``xiq.devices``, ``xiq.endusers``, ``xiq.usergroups``, …)
+    are the autocomplete surface in editors that read type hints (Pylance,
+    PyCharm, jedi). Anything unlisted is still reachable via ``get`` /
+    ``post`` / ``put`` / ``delete`` / ``paged`` / ``post_lro``.
 
     Examples
     --------
-    >>> xiq = XIQ()                          # token from XIQ_TOKEN env var
+    >>> xiq = XIQ()                          # token from XIQ_API_TOKEN
     >>> xiq = XIQ(token="...")               # explicit token (preferred)
-    >>> xiq = XIQ(username="u", password="p")  # legacy login flow
+    >>> xiq = XIQ(username="u", password="p")  # POST /login each run
     >>> from xiq_client import PLATFORM_ONE_BASE_URL
-    >>> xiq = XIQ(token="...", base_url=PLATFORM_ONE_BASE_URL)  # Platform ONE
+    >>> xiq = XIQ(base_url=PLATFORM_ONE_BASE_URL)  # Platform ONE endpoint
     """
 
     def __init__(
@@ -52,12 +59,11 @@ class XIQ:
         username: str | None = None,
         password: str | None = None,
         *,
-        base_url: str = XIQ_BASE_URL,
+        base_url: str | None = None,
         timeout: tuple[float, float] = DEFAULT_TIMEOUT,
         max_retries: int = DEFAULT_MAX_RETRIES,
         session: requests.Session | None = None,
     ) -> None:
-        self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.max_retries = max_retries
         self.session = session or requests.Session()
@@ -72,7 +78,10 @@ class XIQ:
             load_dotenv()
         except ImportError:
             pass
-        token = token or os.environ.get(ENV_TOKEN) or None
+        self.base_url = (
+            base_url or os.environ.get(ENV_BASE_URL) or XIQ_BASE_URL
+        ).rstrip("/")
+        token = token or os.environ.get(ENV_TOKEN) or os.environ.get(ENV_TOKEN_LEGACY) or None
         username = username or os.environ.get(ENV_USERNAME) or None
         password = password or os.environ.get(ENV_PASSWORD) or None
         if token:
@@ -93,22 +102,18 @@ class XIQ:
         self.session.headers["Authorization"] = "Bearer " + token
 
     def _warn_token_platform_mismatch(self, token: str) -> None:
-        # XIQ and Platform ONE credentials are created separately and are not
-        # interchangeable: Platform ONE API keys start with "extr_sk_", classic
-        # XIQ tokens are JWTs. Catch obvious cross-wiring before the first 401.
-        is_p1_key = token.startswith("extr_sk_")
+        # Platform ONE keys (extr_sk_...) work with either base URL.
+        # Classic XIQ tokens from /login (JWT) or /auth/apitoken work only
+        # with api.extremecloudiq.com.
         is_xiq_jwt = token.startswith("ey") and token.count(".") == 2
         on_p1 = self.base_url == PLATFORM_ONE_BASE_URL
-        if is_p1_key and not on_p1:
-            logger.warning(
-                "token looks like a Platform ONE API key (extr_sk_...) but base_url "
-                "is %s; pass base_url=PLATFORM_ONE_BASE_URL or use an XIQ token",
-                self.base_url,
-            )
-        elif is_xiq_jwt and on_p1:
+        if is_xiq_jwt and on_p1:
             logger.warning(
                 "token looks like a classic XIQ token (JWT) but base_url is the "
-                "Platform ONE endpoint; Platform ONE API keys start with extr_sk_"
+                "Platform ONE endpoint; XIQ /login and /auth/apitoken credentials "
+                "work only with %s. Use a Platform ONE key (extr_sk_...) or the "
+                "default XIQ endpoint.",
+                XIQ_BASE_URL,
             )
 
     def _request(
@@ -216,15 +221,19 @@ class XIQ:
     # low-level escape hatches
     # ------------------------------------------------------------------
     def get(self, path: str, **params: Any) -> Any:
+        """GET ``path``. Query string from keyword arguments."""
         return self._request("GET", path, params=params or None)
 
     def post(self, path: str, json: Any = None, **params: Any) -> Any:
+        """POST ``path`` with an optional JSON body. Query string from kwargs."""
         return self._request("POST", path, json=json, params=params or None)
 
     def put(self, path: str, json: Any = None, **params: Any) -> Any:
+        """PUT ``path`` with an optional JSON body. Query string from kwargs."""
         return self._request("PUT", path, json=json, params=params or None)
 
     def delete(self, path: str, **params: Any) -> Any:
+        """DELETE ``path``. Query string from keyword arguments."""
         return self._request("DELETE", path, params=params or None)
 
     def post_lro(
@@ -303,15 +312,18 @@ class XIQ:
         )
 
     def token_info(self) -> dict:
+        """GET /auth/apitoken/info — metadata for the current token."""
         return self.get("/auth/apitoken/info")
 
     # ------------------------------------------------------------------
     # account / VIQ context
     # ------------------------------------------------------------------
     def account_home(self) -> dict:
+        """GET /account/home — the current VIQ."""
         return self.get("/account/home")
 
     def external_accounts(self) -> list[dict]:
+        """GET /account/external — VIQs this admin can switch into."""
         return self.get("/account/external")
 
     def switch_account(self, viq_id: int) -> None:
@@ -323,6 +335,7 @@ class XIQ:
         self._set_token(token)
 
     def viq_info(self) -> dict:
+        """GET /account/viq."""
         return self.get("/account/viq")
 
     def viq_backup(self) -> Any:
@@ -356,13 +369,15 @@ class XIQ:
         limit: int = DEFAULT_PAGE_SIZE,
         **filters: Any,
     ) -> Iterator[dict]:
+        """GET /devices — iterator over every page. Extra filters pass through."""
         params: dict[str, Any] = {"views": views, **filters}
         if location_id is not None:
             params["locationId"] = location_id
         return self.paged("/devices", params, limit=limit)
 
-    def device(self, device_id: int) -> dict:
-        return self.get(f"/devices/{device_id}")
+    def device(self, device_id: int, **params: Any) -> dict:
+        """GET /devices/{id}. Extra query params (e.g. ``fields=CONNECTED``) pass through."""
+        return self.get(f"/devices/{device_id}", **params)
 
     def delete_device(self, device_id: int) -> None:
         self.delete(f"/devices/{device_id}")
@@ -425,8 +440,9 @@ class XIQ:
     def device_alarms(self, device_id: int, *, limit: int = DEFAULT_PAGE_SIZE) -> Iterator[dict]:
         return self.paged(f"/devices/{device_id}/alarms", limit=limit)
 
-    def wifi_interfaces(self, device_id: int) -> Any:
-        return self.get(f"/devices/{device_id}/interfaces/wifi")
+    def wifi_interfaces(self, device_id: int, **params: Any) -> Any:
+        """GET /devices/{id}/interfaces/wifi. Optional ``startTime`` / ``endTime``."""
+        return self.get(f"/devices/{device_id}/interfaces/wifi", **params)
 
     def radio_information(
         self, *, limit: int = DEFAULT_PAGE_SIZE, **filters: Any
@@ -436,8 +452,14 @@ class XIQ:
     # ------------------------------------------------------------------
     # locations
     # ------------------------------------------------------------------
-    def locations_tree(self, *, expand_children: bool = True) -> list[dict]:
-        return self.get("/locations/tree", expandChildren=expand_children)
+    def locations_tree(
+        self, *, expand_children: bool = True, parent_id: int | None = None
+    ) -> list[dict]:
+        """GET /locations/tree. Pass ``parent_id`` to list children of a site/building."""
+        params: dict[str, Any] = {"expandChildren": expand_children}
+        if parent_id is not None:
+            params["parentId"] = parent_id
+        return self.get("/locations/tree", **params)
 
     def init_location(self, organization: str, country: str) -> dict:
         return self.post(
@@ -484,6 +506,7 @@ class XIQ:
     # end users (PPSK) / user groups / PCGs
     # ------------------------------------------------------------------
     def endusers(self, *, limit: int = DEFAULT_PAGE_SIZE, **filters: Any) -> Iterator[dict]:
+        """GET /endusers — iterator. Filters pass through (e.g. ``user_group_ids=``)."""
         return self.paged("/endusers", dict(filters), limit=limit)
 
     def create_enduser(self, payload: dict) -> dict:
@@ -496,6 +519,7 @@ class XIQ:
         self.delete(f"/endusers/{enduser_id}")
 
     def usergroups(self, *, limit: int = DEFAULT_PAGE_SIZE) -> Iterator[dict]:
+        """GET /usergroups — iterator over every page."""
         return self.paged("/usergroups", limit=limit)
 
     def pcg_users(self, policy_id: int, *, limit: int = DEFAULT_PAGE_SIZE) -> Iterator[dict]:
@@ -632,6 +656,7 @@ class XIQ:
     # logs
     # ------------------------------------------------------------------
     def audit_logs(self, *, limit: int = DEFAULT_PAGE_SIZE, **filters: Any) -> Iterator[dict]:
+        """GET /logs/audit — iterator. Requires ``startTime`` and ``endTime`` (epoch ms)."""
         return self.paged("/logs/audit", dict(filters), limit=limit)
 
 
