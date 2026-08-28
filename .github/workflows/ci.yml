@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  lint:
+  test:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -18,10 +18,8 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install
-        run: |
-          pip install -e .
-          pip install ruff
+        run: pip install -e ".[dev]"
       - name: Lint
-        run: ruff check src
-      - name: Import check
-        run: python -c "import xiq_client; print(xiq_client.__version__)"
+        run: ruff check src tests
+      - name: Test
+        run: pytest
