@@ -37,3 +37,7 @@ class APIError(XIQError):
         self.method = method
         self.url = url
         self.body = body
+
+
+class LROTimeoutError(APIError):
+    """``wait_lro`` exceeded its timeout before the operation finished."""

@@ -5,7 +5,7 @@ base URL (`https://api.extremecloudiq.com`, or the Platform ONE equivalent).
 
 Anything not listed is still reachable with the same retry/timeout/auth
 behavior via `xiq.get/post/put/delete(path, ...)`, `xiq.paged(path, params)`,
-and `xiq.post_lro(path)` + `xiq.check_lro(url)`.
+and `xiq.post_lro(path)` + `xiq.check_lro(url)` / `xiq.wait_lro(url)`.
 
 ## Core (works for any endpoint)
 
@@ -17,7 +17,8 @@ and `xiq.post_lro(path)` + `xiq.check_lro(url)`.
 | `delete(path, **params)` | `DELETE <any path>` |  |
 | `paged(path, params=None, limit=100)` | `GET <any list path>` | iterator over every page |
 | `post_lro(path, ...)` | `POST <any path>` | returns the Location URL of a long-running op |
-| `check_lro(url)` | `GET <absolute LRO URL>` | poll until metadata.status is terminal |
+| `check_lro(url)` | `GET <absolute LRO URL>` | one poll; does not wait |
+| `wait_lro(url, timeout=300, interval=2)` | `GET <absolute LRO URL>` | polls until done or timeout |
 | `logout()` | `POST /logout` | revokes the current token |
 
 ## Auth & tokens

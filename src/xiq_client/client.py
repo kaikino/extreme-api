@@ -14,7 +14,13 @@ from typing import Any, BinaryIO, Callable
 
 import requests
 
-from .exceptions import APIError, AuthenticationError, CredentialsError, XIQError
+from .exceptions import (
+    APIError,
+    AuthenticationError,
+    CredentialsError,
+    LROTimeoutError,
+    XIQError,
+)
 
 logger = logging.getLogger("xiq_client")
 
@@ -34,6 +40,46 @@ DEFAULT_MAX_RETRIES = 5
 DEFAULT_PAGE_SIZE = 100
 RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 MAX_BACKOFF_SECONDS = 60.0  # cap for Retry-After and backoff sleeps
+LRO_RUNNING_STATUSES = frozenset({"RUNNING", "PENDING", "QUEUED", "IN_PROGRESS"})
+LRO_FAILED_STATUSES = frozenset({"FAILED", "FAILURE", "ERROR", "CANCELLED", "CANCELED"})
+DEFAULT_LRO_TIMEOUT = 300.0
+DEFAULT_LRO_INTERVAL = 2.0
+
+
+def _package_version() -> str:
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+
+        try:
+            return version("xiq-client")
+        except PackageNotFoundError:
+            return "0"
+    except ImportError:
+        return "0"
+
+
+def _lro_status(body: Any) -> str:
+    if not isinstance(body, dict):
+        return ""
+    metadata = body.get("metadata") or {}
+    return str(metadata.get("status") or "").upper()
+
+
+def _lro_finished(body: Any) -> bool:
+    if not isinstance(body, dict):
+        return True
+    if body.get("done") is True:
+        return True
+    status = _lro_status(body)
+    return bool(status) and status not in LRO_RUNNING_STATUSES
+
+
+def _lro_failed(body: Any) -> bool:
+    if not isinstance(body, dict):
+        return False
+    if body.get("error"):
+        return True
+    return _lro_status(body) in LRO_FAILED_STATUSES
 
 
 class XIQ:
@@ -68,6 +114,9 @@ class XIQ:
         self.max_retries = max_retries
         self.session = session or requests.Session()
         self.session.headers.setdefault("Accept", "application/json")
+        self.session.headers.setdefault(
+            "User-Agent", f"xiq-client/{_package_version()}"
+        )
         self._sleep: Callable[[float], None] = time.sleep
 
         # Explicit args win over env vars
@@ -250,8 +299,43 @@ class XIQ:
         )
 
     def check_lro(self, url: str) -> Any:
-        """Poll a long-running operation's Location URL from :meth:`post_lro`."""
+        """GET a long-running operation's Location URL once. See :meth:`wait_lro`."""
         return self._request("GET", url)
+
+    def wait_lro(
+        self,
+        url: str,
+        *,
+        timeout: float = DEFAULT_LRO_TIMEOUT,
+        interval: float = DEFAULT_LRO_INTERVAL,
+    ) -> Any:
+        """Poll an LRO Location URL until it finishes or ``timeout`` seconds elapse.
+
+        XIQ LRO bodies use ``{"done": bool, "metadata": {"status": ...}}``.
+        Returns the last JSON body. Raises :class:`LROTimeoutError` on timeout
+        and :class:`APIError` if the operation failed.
+        """
+        deadline = time.monotonic() + timeout
+        last: Any = None
+        while True:
+            last = self.check_lro(url)
+            if _lro_finished(last):
+                if _lro_failed(last):
+                    raise APIError(
+                        f"LRO {url} failed",
+                        method="GET",
+                        url=url,
+                        body=last,
+                    )
+                return last
+            if time.monotonic() >= deadline:
+                raise LROTimeoutError(
+                    f"LRO {url} did not finish within {timeout}s",
+                    method="GET",
+                    url=url,
+                    body=last,
+                )
+            self._sleep(interval)
 
     def paged(
         self, path: str, params: dict[str, Any] | None = None, *, limit: int = DEFAULT_PAGE_SIZE
@@ -663,6 +747,7 @@ class XIQ:
 __all__ = [
     "XIQ",
     "XIQError",
+    "LROTimeoutError",
     "XIQ_BASE_URL",
     "PLATFORM_ONE_BASE_URL",
 ]
