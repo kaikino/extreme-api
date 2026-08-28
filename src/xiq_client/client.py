@@ -112,19 +112,22 @@ class XIQ:
     ) -> None:
         self.timeout = timeout
         self.max_retries = max_retries
-        self.session = session or requests.Session()
+        if session is None:
+            self.session = requests.Session()
+            self.session.headers["User-Agent"] = f"xiq-client/{_package_version()}"
+        else:
+            self.session = session
         self.session.headers.setdefault("Accept", "application/json")
-        self.session.headers.setdefault(
-            "User-Agent", f"xiq-client/{_package_version()}"
-        )
         self._sleep: Callable[[float], None] = time.sleep
 
         # Explicit args win over env vars
         # .env file is used when python-dotenv is installed
         try:
+            from pathlib import Path
+
             from dotenv import load_dotenv
 
-            load_dotenv()
+            load_dotenv(Path.cwd() / ".env")
         except ImportError:
             pass
         self.base_url = (
