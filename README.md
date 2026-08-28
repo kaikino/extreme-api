@@ -1,8 +1,10 @@
 # xiq-client
 
-Python client for the ExtremeCloud IQ API (including Extreme Platform ONE).
+Unofficial Python client for the ExtremeCloud IQ API, including Extreme
+Platform ONE. Not affiliated with Extreme Networks; the vendor package is
+[`extremecloudiq-api`](https://pypi.org/project/extremecloudiq-api/).
 
-- Token auth by default (`XIQ_API_TOKEN`), `POST /login` as fallback
+- Token auth by default (`XIQ_API_TOKEN`; `XIQ_TOKEN` still works), `POST /login` as fallback
 - Timeouts on every request (connect 10 s / read 60 s)
 - Retries with backoff; honors `Retry-After` on 429/503
 - Automatic pagination — list methods return iterators
@@ -33,7 +35,8 @@ for user in xiq.endusers(user_group_ids=42):
     print(user["user_name"])
 ```
 
-Full method → endpoint table: [METHODS.md](METHODS.md).
+Full method → endpoint table:
+[METHODS.md](https://github.com/kaikino/xiq-client/blob/main/METHODS.md).
 
 Typing `xiq.` in VS Code, Cursor, PyCharm, or similar lists every named
 method (`devices`, `endusers`, `usergroups`, `get`, `paged`, …) from the
@@ -45,6 +48,7 @@ Resolved in order:
 
 1. Arguments — `XIQ(token="...")`, or `username=`/`password=` (`POST /login`).
 2. Environment — `XIQ_API_TOKEN` (preferred), or `XIQ_USERNAME`/`XIQ_PASSWORD`.
+   `XIQ_TOKEN` is still read if `XIQ_API_TOKEN` is empty.
    Optional `XIQ_BASE_URL` selects the API host.
 3. A `.env` file, for local use. Needs the dotenv extra; never overrides real
    environment variables:
@@ -54,8 +58,8 @@ Resolved in order:
    cp .env.example .env   # then fill in XIQ_API_TOKEN
    ```
 
-   `.env` is found from the current working directory, not the script's
-   directory
+   `.env` is loaded from the current working directory only, not parent
+   directories and not the script's directory.
 
 Syncing between two VIQs? Pass tokens explicitly: `XIQ(token=src)`, `XIQ(token=dst)`.
 
@@ -93,15 +97,20 @@ pointed at the Platform ONE host.
 ## Errors
 
 ```python
-from xiq_client import APIError, AuthenticationError, XIQError
+from xiq_client import APIError, AuthenticationError, LROTimeoutError, XIQError
 
 try:
     xiq.get("/devices/999")
 except AuthenticationError:      # bad/expired token (401/403)
     ...
+except LROTimeoutError:
+    ...
 except APIError as e:
     print(e.status_code, e.body) # 404, 429, ...; None = retries exhausted
 ```
+
+HTTP 403 is still raised as `AuthenticationError` in 0.1.x (a valid token with
+missing scopes returns 403). Do not use that catch to trigger a re-login.
 
 ## Coverage
 
@@ -117,7 +126,8 @@ timeout/retry/auth behavior:
 ```python
 xiq.get("/alerts", order="DESC")
 xiq.paged("/clients/active")               # auto-paginated iterator
-xiq.post_lro("/account/viq/export")        # returns the LRO Location URL
+url = xiq.post_lro("/account/viq/export")  # Location URL of a long-running op
+xiq.wait_lro(url)                          # poll until done or timeout
 ```
 
 ## Migrating a script from the copied `xiq_api.py`
@@ -131,3 +141,9 @@ xiq.post_lro("/account/viq/export")        # returns the LRO Location URL
 | `xiq.selectManagedAccount()` + `switchAccount`  | `xiq.external_accounts()` + `xiq.switch_account(viq_id)` |
 | hand-rolled pagination loops                    | any `xiq.paged(path)` iterator              |
 | pandas DataFrames from some methods             | plain `dict` / iterators                    |
+
+## Releasing
+
+Push a `v*` tag (for example `v0.1.1`) after adding this GitHub repository as a
+[PyPI Trusted Publisher](https://docs.pypi.org/trusted-publishers/). Existing
+versions cannot be overwritten.
