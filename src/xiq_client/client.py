@@ -5,6 +5,7 @@ so migrating a script is mostly an import change.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import random
@@ -43,6 +44,7 @@ MAX_BACKOFF_SECONDS = 60.0  # cap for Retry-After and backoff sleeps
 LRO_RUNNING_STATUSES = frozenset({"RUNNING", "PENDING", "QUEUED", "IN_PROGRESS"})
 LRO_FAILED_STATUSES = frozenset({"FAILED", "FAILURE", "ERROR", "CANCELLED", "CANCELED"})
 DEFAULT_LRO_TIMEOUT = 300.0
+DEFAULT_CLI_LRO_TIMEOUT = 1200.0  # CLI on many devices; org scripts waited ~20 min
 DEFAULT_LRO_INTERVAL = 2.0
 
 
@@ -95,6 +97,7 @@ class XIQ:
     >>> xiq = XIQ()                          # token from XIQ_API_TOKEN
     >>> xiq = XIQ(token="...")               # explicit token (preferred)
     >>> xiq = XIQ(username="u", password="p")  # POST /login each run
+    >>> xiq = XIQ(user_name="u", password="p")  # alias used by org scripts
     >>> from xiq_client import PLATFORM_ONE_BASE_URL
     >>> xiq = XIQ(base_url=PLATFORM_ONE_BASE_URL)  # Platform ONE endpoint
     """
@@ -104,6 +107,7 @@ class XIQ:
         token: str | None = None,
         username: str | None = None,
         password: str | None = None,
+        user_name: str | None = None,
         *,
         base_url: str | None = None,
         timeout: tuple[float, float] = DEFAULT_TIMEOUT,
@@ -119,6 +123,8 @@ class XIQ:
             self.session = session
         self.session.headers.setdefault("Accept", "application/json")
         self._sleep: Callable[[float], None] = time.sleep
+        self.viq_name: str | None = None
+        self.viq_id: Any = None
 
         # Explicit args win over env vars
         # .env file is used when python-dotenv is installed
@@ -134,7 +140,12 @@ class XIQ:
             base_url or os.environ.get(ENV_BASE_URL) or XIQ_BASE_URL
         ).rstrip("/")
         token = token or os.environ.get(ENV_TOKEN) or os.environ.get(ENV_TOKEN_LEGACY) or None
-        username = username or os.environ.get(ENV_USERNAME) or None
+        username = (
+            username
+            or user_name
+            or os.environ.get(ENV_USERNAME)
+            or None
+        )
         password = password or os.environ.get(ENV_PASSWORD) or None
         if token:
             self._warn_token_platform_mismatch(token)
@@ -266,7 +277,9 @@ class XIQ:
         message = f"{method} {url} -> HTTP {status}: {str(body)[:300]}"
 
         if status in (401, 403):
-            raise AuthenticationError(message)
+            raise AuthenticationError(
+                message, status_code=status, method=method, url=url, body=body
+            )
         raise APIError(message, status_code=status, method=method, url=url, body=body)
 
     # ------------------------------------------------------------------
@@ -407,19 +420,43 @@ class XIQ:
     # ------------------------------------------------------------------
     def account_home(self) -> dict:
         """GET /account/home — the current VIQ."""
-        return self.get("/account/home")
+        home = self.get("/account/home")
+        if isinstance(home, dict):
+            self.viq_name = home.get("name")
+            self.viq_id = home.get("id")
+        return home
 
     def external_accounts(self) -> list[dict]:
         """GET /account/external — VIQs this admin can switch into."""
         return self.get("/account/external")
 
-    def switch_account(self, viq_id: int) -> None:
-        """Switch into an externally managed VIQ; refreshes the bearer token."""
+    def select_managed_account(self) -> tuple[list[dict], str | None]:
+        """Current VIQ name plus the list of externally managed accounts.
+
+        Matches the ``(accounts, viqName)`` tuple the copied ``xiq_api.py``
+        scripts unpack.
+        """
+        home = self.account_home()
+        accounts = self.external_accounts() or []
+        if not isinstance(accounts, list):
+            accounts = []
+        return accounts, home.get("name") if isinstance(home, dict) else None
+
+    def switch_account(self, viq_id: int, viq_name: str | None = None) -> None:
+        """Switch into an externally managed VIQ; refreshes the bearer token.
+
+        If ``viq_name`` is given, the new ``/account/home`` name must match.
+        """
         body = self.post("/account/:switch", id=viq_id)
         token = (body or {}).get("access_token")
         if not token:
             raise AuthenticationError("Account switch returned no access_token")
         self._set_token(token)
+        home = self.account_home()
+        if viq_name is not None and home.get("name") != viq_name:
+            raise AuthenticationError(
+                f"Account switch targeted {viq_name!r} but current VIQ is {home.get('name')!r}"
+            )
 
     def viq_info(self) -> dict:
         """GET /account/viq."""
@@ -438,9 +475,24 @@ class XIQ:
         )
 
     def viq_import(
-        self, file: BinaryIO, filename: str, *, resend_user_notifications: bool = False
+        self,
+        file: BinaryIO | str,
+        filename: str | None = None,
+        *,
+        resend_user_notifications: bool = False,
     ) -> str | None:
-        """Import a VIQ backup file; returns the LRO Location URL to poll."""
+        """Import a VIQ backup file; returns the LRO Location URL to poll.
+
+        ``file`` may be a path string or an open binary file.
+        """
+        if isinstance(file, str):
+            filename = filename or os.path.basename(file)
+            with open(file, "rb") as fh:
+                return self.viq_import(
+                    fh, filename, resend_user_notifications=resend_user_notifications
+                )
+        if not filename:
+            raise ValueError("filename is required when file is not a path")
         params = {"resendUserNotifications": "true"} if resend_user_notifications else None
         files = {"importFile": (filename, file, "text/plain")}
         return self.post_lro("/account/viq/import", params=params, files=files)
@@ -453,13 +505,37 @@ class XIQ:
         *,
         views: str = "FULL",
         location_id: int | None = None,
+        location_ids: Sequence[int] | None = None,
+        hostnames: str | Sequence[str] | None = None,
+        mac_addresses: str | Sequence[str] | None = None,
+        serials: Sequence[str] | None = None,
+        connected: bool | None = None,
+        config_mismatch: bool | None = None,
         limit: int = DEFAULT_PAGE_SIZE,
         **filters: Any,
     ) -> Iterator[dict]:
-        """GET /devices — iterator over every page. Extra filters pass through."""
+        """GET /devices — iterator over every page.
+
+        List filters (``hostnames``, ``location_ids``, ``serials``, …) are sent
+        as repeated query parameters, matching the copied org clients.
+        """
         params: dict[str, Any] = {"views": views, **filters}
         if location_id is not None:
             params["locationId"] = location_id
+        if location_ids:
+            params["locationIds"] = list(location_ids)
+        if hostnames is not None:
+            params["hostnames"] = [hostnames] if isinstance(hostnames, str) else list(hostnames)
+        if mac_addresses is not None:
+            params["macAddresses"] = (
+                [mac_addresses] if isinstance(mac_addresses, str) else list(mac_addresses)
+            )
+        if serials:
+            params["sns"] = list(serials)
+        if connected is not None:
+            params["connected"] = connected
+        if config_mismatch is not None:
+            params["configMismatch"] = config_mismatch
         return self.paged("/devices", params, limit=limit)
 
     def device(self, device_id: int, **params: Any) -> dict:
@@ -490,13 +566,38 @@ class XIQ:
     def reboot_device(self, device_id: int) -> None:
         self.post(f"/devices/{device_id}/:reboot")
 
-    def send_cli(self, device_ids: Sequence[int], commands: Sequence[str]) -> dict:
-        return self._request(
-            "POST",
-            "/devices/:cli",
-            params={"async": "false"},
-            json={"devices": {"ids": list(device_ids)}, "clis": list(commands)},
-        )
+    def send_cli(
+        self,
+        device_ids: Sequence[int],
+        commands: Sequence[str],
+        *,
+        wait: bool = False,
+        timeout: float = DEFAULT_CLI_LRO_TIMEOUT,
+    ) -> Any:
+        """POST /devices/:cli.
+
+        ``wait=False`` (default, 0.1.x) runs synchronously (``async=false``).
+        ``wait=True`` starts an LRO (``async=true``) and polls with
+        :meth:`wait_lro` — what the org CLI scripts actually do. CLI on a
+        large device list can take many minutes; the default timeout is
+        20 minutes.
+        """
+        payload = {"devices": {"ids": list(device_ids)}, "clis": list(commands)}
+        if not wait:
+            return self._request(
+                "POST", "/devices/:cli", params={"async": "false"}, json=payload
+            )
+        url = self.post_lro("/devices/:cli", json=payload, params={"async": "true"})
+        if not url:
+            raise APIError(
+                "CLI LRO returned no Location header",
+                method="POST",
+                url="/devices/:cli",
+            )
+        body = self.wait_lro(url, timeout=timeout)
+        if isinstance(body, dict):
+            return body.get("response", body)
+        return body
 
     def set_hostname(self, device_id: int, hostname: str) -> Any:
         # the new name goes in the query string, not the body
@@ -521,11 +622,17 @@ class XIQ:
     def set_device_network_policy(self, device_id: int, payload: dict) -> Any:
         return self.put(f"/devices/{device_id}/network-policy", json=payload)
 
-    def assign_network_policy(self, payload: dict) -> Any:
+    def assign_network_policy(self, payload: dict | str) -> Any:
+        """POST /devices/network-policy/:assign. Accepts a dict or JSON string."""
+        if isinstance(payload, str):
+            payload = json.loads(payload)
         return self.post("/devices/network-policy/:assign", json=payload)
 
-    def device_alarms(self, device_id: int, *, limit: int = DEFAULT_PAGE_SIZE) -> Iterator[dict]:
-        return self.paged(f"/devices/{device_id}/alarms", limit=limit)
+    def device_alarms(
+        self, device_id: int, *, limit: int = DEFAULT_PAGE_SIZE, **filters: Any
+    ) -> Iterator[dict]:
+        """GET /devices/{id}/alarms. Pass ``startTime`` / ``endTime`` (epoch ms)."""
+        return self.paged(f"/devices/{device_id}/alarms", dict(filters), limit=limit)
 
     def wifi_interfaces(self, device_id: int, **params: Any) -> Any:
         """GET /devices/{id}/interfaces/wifi. Optional ``startTime`` / ``endTime``."""
@@ -556,8 +663,14 @@ class XIQ:
     def create_location(self, payload: dict) -> dict:
         return self.post("/locations", json=payload)
 
-    def sites(self, *, limit: int = DEFAULT_PAGE_SIZE) -> Iterator[dict]:
-        return self.paged("/locations/site", limit=limit)
+    def sites(self, *, limit: int = DEFAULT_PAGE_SIZE, **filters: Any) -> Iterator[dict]:
+        return self.paged("/locations/site", dict(filters), limit=limit)
+
+    def site_by_name(self, name: str) -> dict | None:
+        for site in self.sites(name=name):
+            if site.get("name") == name:
+                return site
+        return None
 
     def create_site(self, payload: dict) -> dict:
         return self.post("/locations/site", json=payload)
@@ -565,14 +678,33 @@ class XIQ:
     def update_site(self, site_id: int, payload: dict) -> dict:
         return self.put(f"/locations/site/{site_id}", json=payload)
 
-    def buildings(self, *, limit: int = DEFAULT_PAGE_SIZE) -> Iterator[dict]:
-        return self.paged("/locations/building", limit=limit)
+    def buildings(self, *, limit: int = DEFAULT_PAGE_SIZE, **filters: Any) -> Iterator[dict]:
+        return self.paged("/locations/building", dict(filters), limit=limit)
+
+    def building_by_name(self, name: str) -> dict | None:
+        matches = [b for b in self.buildings(name=name) if b.get("name") == name]
+        if len(matches) == 1:
+            return matches[0]
+        return None
+
+    def floors_for_building(self, building_name: str) -> list[dict]:
+        """Floors (location-tree children) of the uniquely named building."""
+        matches = list(self.buildings(name=building_name, limit=DEFAULT_PAGE_SIZE))
+        if len(matches) != 1:
+            raise APIError(
+                f"expected 1 building named {building_name!r}, got {len(matches)}",
+                method="GET",
+                url="/locations/building",
+                body=matches,
+            )
+        tree = self.locations_tree(parent_id=matches[0]["id"], expand_children=False)
+        return tree if isinstance(tree, list) else []
 
     def create_building(self, payload: dict) -> dict:
         return self.post("/locations/building", json=payload)
 
-    def floors(self, *, limit: int = DEFAULT_PAGE_SIZE) -> Iterator[dict]:
-        return self.paged("/locations/floor", limit=limit)
+    def floors(self, *, limit: int = DEFAULT_PAGE_SIZE, **filters: Any) -> Iterator[dict]:
+        return self.paged("/locations/floor", dict(filters), limit=limit)
 
     def create_floor(self, payload: dict) -> dict:
         return self.post("/locations/floor", json=payload)
@@ -609,6 +741,12 @@ class XIQ:
         """GET /usergroups — iterator over every page."""
         return self.paged("/usergroups", limit=limit)
 
+    def usergroup_by_name(self, name: str) -> dict | None:
+        for group in self.usergroups():
+            if group.get("name") == name:
+                return group
+        return None
+
     def pcg_users(self, policy_id: int, *, limit: int = DEFAULT_PAGE_SIZE) -> Iterator[dict]:
         return self.paged(f"/pcgs/key-based/network-policy-{policy_id}/users", limit=limit)
 
@@ -631,6 +769,12 @@ class XIQ:
     def network_policies(self, *, limit: int = DEFAULT_PAGE_SIZE) -> Iterator[dict]:
         return self.paged("/network-policies", limit=limit)
 
+    def network_policy_by_name(self, name: str) -> dict | None:
+        for policy in self.network_policies():
+            if policy.get("name") == name:
+                return policy
+        return None
+
     def deploy_config(
         self,
         device_ids: Sequence[int],
@@ -638,10 +782,15 @@ class XIQ:
         complete_update: bool = False,
         activate_at_next_reboot: bool = False,
         activation_delay_seconds: int = 0,
+        wait: bool = False,
+        timeout: float = DEFAULT_LRO_TIMEOUT,
     ) -> Any:
-        """Push a config update to devices (``POST /deployments?async=true``)."""
-        return self._request(
-            "POST",
+        """Push a config update to devices (``POST /deployments?async=true``).
+
+        ``wait=False`` returns the LRO Location URL. ``wait=True`` polls and
+        returns the LRO status string (e.g. ``SUCCEEDED``).
+        """
+        url = self.post_lro(
             "/deployments",
             params={"async": "true"},
             json={
@@ -655,6 +804,21 @@ class XIQ:
                 },
             },
         )
+        if not wait:
+            return url
+        if not url:
+            raise APIError(
+                "deployment LRO returned no Location header",
+                method="POST",
+                url="/deployments",
+            )
+        body = self.wait_lro(url, timeout=timeout)
+        status = _lro_status(body)
+        if status:
+            return status
+        if isinstance(body, dict) and body.get("done"):
+            return "SUCCEEDED"
+        return body
 
     def set_psk_password(self, ssid_id: int, password: str) -> Any:
         # the API takes the bare string as the body, not JSON
@@ -665,6 +829,12 @@ class XIQ:
     # ------------------------------------------------------------------
     def ccgs(self, *, limit: int = DEFAULT_PAGE_SIZE) -> Iterator[dict]:
         return self.paged("/ccgs", limit=limit)
+
+    def ccg_by_name(self, name: str) -> dict | None:
+        for ccg in self.ccgs():
+            if ccg.get("name") == name:
+                return ccg
+        return None
 
     def create_ccg(self, payload: dict) -> dict:
         return self.post("/ccgs", json=payload)

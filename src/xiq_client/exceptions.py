@@ -12,10 +12,6 @@ class CredentialsError(XIQError):
     """No usable credentials were supplied or found in the environment."""
 
 
-class AuthenticationError(XIQError):
-    """Login failed or the token was rejected (HTTP 401/403)."""
-
-
 class APIError(XIQError):
     """The API returned an error response, or retries were exhausted.
 
@@ -37,6 +33,10 @@ class APIError(XIQError):
         self.method = method
         self.url = url
         self.body = body
+
+
+class AuthenticationError(APIError):
+    """Login failed or the token was rejected (HTTP 401/403)."""
 
 
 class LROTimeoutError(APIError):

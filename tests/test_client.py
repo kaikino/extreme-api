@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 
 import pytest
@@ -50,15 +51,18 @@ def test_get_json(xiq):
 @responses.activate
 def test_401_is_authentication_error(xiq):
     responses.add(responses.GET, HOME, json={"detail": "nope"}, status=401)
-    with pytest.raises(AuthenticationError):
+    with pytest.raises(AuthenticationError) as exc:
         xiq.account_home()
+    assert exc.value.status_code == 401
+    assert isinstance(exc.value, APIError)
 
 
 @responses.activate
 def test_403_stays_authentication_error(xiq):
     responses.add(responses.GET, HOME, json={"detail": "denied"}, status=403)
-    with pytest.raises(AuthenticationError):
+    with pytest.raises(AuthenticationError) as exc:
         xiq.account_home()
+    assert exc.value.status_code == 403
 
 
 @responses.activate
@@ -170,3 +174,143 @@ def test_platform_one_key_on_classic_host_does_not_warn(isolated_env, caplog):
     with caplog.at_level(logging.WARNING, logger="xiq_client"):
         XIQ(token="extr_sk_test", base_url=XIQ_BASE_URL)
     assert caplog.records == []
+
+
+def test_user_name_alias(isolated_env):
+    with responses.RequestsMock() as rsps:
+        rsps.add(
+            responses.POST,
+            f"{XIQ_BASE_URL}/login",
+            json={"access_token": "from-login"},
+            status=200,
+        )
+        client = XIQ(user_name="a@b.com", password="secret")
+    assert client.session.headers["Authorization"] == "Bearer from-login"
+
+
+@responses.activate
+def test_select_managed_account(xiq):
+    responses.add(
+        responses.GET, HOME, json={"id": 1, "name": "HomeVIQ"}, status=200
+    )
+    responses.add(
+        responses.GET,
+        f"{XIQ_BASE_URL}/account/external",
+        json=[{"id": 9, "name": "Ext"}],
+        status=200,
+    )
+    accounts, name = xiq.select_managed_account()
+    assert name == "HomeVIQ"
+    assert accounts[0]["id"] == 9
+    assert xiq.viq_name == "HomeVIQ"
+
+
+@responses.activate
+def test_devices_sends_repeated_hostname_params(xiq):
+    responses.add(
+        responses.GET,
+        f"{XIQ_BASE_URL}/devices",
+        json={"page": 1, "count": 0, "total_pages": 1, "data": []},
+        status=200,
+    )
+    list(xiq.devices(hostnames=["ap-1", "ap-2"], connected=True, limit=10))
+    qs = str(responses.calls[0].request.url)
+    assert "hostnames=ap-1" in qs
+    assert "hostnames=ap-2" in qs
+    assert "connected=True" in qs or "connected=true" in qs
+
+
+@responses.activate
+def test_floors_for_building(xiq):
+    responses.add(
+        responses.GET,
+        f"{XIQ_BASE_URL}/locations/building",
+        json={"page": 1, "count": 1, "total_pages": 1, "data": [{"id": 50, "name": "HQ"}]},
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        f"{XIQ_BASE_URL}/locations/tree",
+        json=[{"id": 51, "name": "Floor 1"}],
+        status=200,
+    )
+    floors = xiq.floors_for_building("HQ")
+    assert floors[0]["name"] == "Floor 1"
+
+
+@responses.activate
+def test_send_cli_wait_polls_lro(xiq):
+    responses.add(
+        responses.POST,
+        f"{XIQ_BASE_URL}/devices/:cli",
+        status=202,
+        headers={"Location": LRO_URL},
+    )
+    responses.add(
+        responses.GET,
+        LRO_URL,
+        json={"done": True, "metadata": {"status": "SUCCEEDED"}, "response": {"ok": 1}},
+        status=200,
+    )
+    assert xiq.send_cli([1], ["show ver"], wait=True) == {"ok": 1}
+
+
+@responses.activate
+def test_assign_network_policy_accepts_json_string(xiq):
+    responses.add(
+        responses.POST,
+        f"{XIQ_BASE_URL}/devices/network-policy/:assign",
+        json={"ok": True},
+        status=200,
+    )
+    payload = '{"devices": {"ids": ["1"]}, "network_policy_id": "9"}'
+    assert xiq.assign_network_policy(payload) == {"ok": True}
+    assert json.loads(responses.calls[0].request.body)["network_policy_id"] == "9"
+
+
+@responses.activate
+def test_deploy_config_wait_returns_status(xiq):
+    responses.add(
+        responses.POST,
+        f"{XIQ_BASE_URL}/deployments",
+        status=202,
+        headers={"Location": LRO_URL},
+    )
+    responses.add(
+        responses.GET,
+        LRO_URL,
+        json={"done": True, "metadata": {"status": "SUCCEEDED"}},
+        status=200,
+    )
+    assert xiq.deploy_config([1], wait=True) == "SUCCEEDED"
+
+
+@responses.activate
+def test_network_policy_by_name(xiq):
+    responses.add(
+        responses.GET,
+        f"{XIQ_BASE_URL}/network-policies",
+        json={
+            "page": 1,
+            "count": 1,
+            "total_pages": 1,
+            "data": [{"id": 3, "name": "Corp"}],
+        },
+        status=200,
+    )
+    assert xiq.network_policy_by_name("Corp")["id"] == 3
+
+
+@responses.activate
+def test_device_alarms_pass_time_filters(xiq):
+    responses.add(
+        responses.GET,
+        f"{XIQ_BASE_URL}/devices/9/alarms",
+        json={"page": 1, "count": 0, "total_pages": 1, "data": []},
+        status=200,
+    )
+    list(xiq.device_alarms(9, startTime=1, endTime=2, limit=1))
+    qs = str(responses.calls[0].request.url)
+    assert "startTime=1" in qs
+    assert "endTime=2" in qs
+

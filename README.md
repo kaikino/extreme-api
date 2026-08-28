@@ -138,7 +138,7 @@ xiq.wait_lro(url)                          # poll until done or timeout
 | `xiq.collectDevices(pageSize=100)`              | `list(xiq.devices(limit=100))`              |
 | `xiq.collectNetworkPolicies(pageSize)`          | `list(xiq.network_policies())`              |
 | `xiq.changeNetworkPolicy(payload)`              | `xiq.assign_network_policy(payload)`        |
-| `xiq.selectManagedAccount()` + `switchAccount`  | `xiq.external_accounts()` + `xiq.switch_account(viq_id)` |
+| `xiq.selectManagedAccount()` + `switchAccount`  | `xiq.select_managed_account()` + `xiq.switch_account(viq_id)` |
 | hand-rolled pagination loops                    | any `xiq.paged(path)` iterator              |
 | pandas DataFrames from some methods             | plain `dict` / iterators                    |
 

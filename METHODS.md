@@ -34,7 +34,8 @@ and `xiq.post_lro(path)` + `xiq.check_lro(url)` / `xiq.wait_lro(url)`.
 |---|---|---|
 | `account_home()` | `GET /account/home` |  |
 | `external_accounts()` | `GET /account/external` |  |
-| `switch_account(viq_id)` | `POST /account/:switch` | refreshes the bearer token from the response |
+| `select_managed_account()` | `GET /account/home` + `GET /account/external` | returns `(accounts, current_viq_name)` |
+| `switch_account(viq_id, viq_name=…)` | `POST /account/:switch` | optional viq_name is verified against /account/home |
 | `viq_info()` | `GET /account/viq` |  |
 | `viq_backup()` | `POST /account/viq/:backup` |  |
 | `viq_export()` | `POST (LRO) /account/viq/export` | returns the LRO Location URL — poll with check_lro() |
@@ -45,7 +46,7 @@ and `xiq.post_lro(path)` + `xiq.check_lro(url)` / `xiq.wait_lro(url)`.
 
 | Method | API call | Notes |
 |---|---|---|
-| `devices(views=…, location_id=…, limit=…)` | `GET (paged) /devices` | views=FULL default; location_id= and extra filters supported |
+| `devices(views=…, location_id=…, location_ids=…, hostnames=…, serials=…, connected=…, limit=…)` | `GET (paged) /devices` | list filters become repeated query params |
 | `device(device_id, **params)` | `GET /devices/{device_id}` | extra query params pass through (e.g. fields=CONNECTED) |
 | `delete_device(device_id)` | `DELETE /devices/{device_id}` |  |
 | `delete_devices(device_ids)` | `POST /devices/:delete` |  |
@@ -53,7 +54,7 @@ and `xiq.post_lro(path)` + `xiq.check_lro(url)` / `xiq.wait_lro(url)`.
 | `onboard_devices(payload)` | `POST /devices/:onboard` |  |
 | `advanced_onboard(payload, wait=…)` | `POST (LRO) /devices/:advanced-onboard` | wait=False returns the LRO Location URL |
 | `reboot_device(device_id)` | `POST /devices/{device_id}/:reboot` |  |
-| `send_cli(device_ids, commands)` | `POST /devices/:cli` | sends ?async=false |
+| `send_cli(device_ids, commands, wait=…)` | `POST /devices/:cli` | wait=True uses async LRO + wait_lro (20 min default timeout) |
 | `set_hostname(device_id, hostname)` | `PUT /devices/{device_id}/hostname` | new name goes in the query string, no body |
 | `set_description(device_id, description)` | `PUT (raw body) /devices/{device_id}/description` | body is the bare string, not JSON |
 | `device_location(device_id)` | `GET /devices/{device_id}/location` |  |
@@ -61,8 +62,8 @@ and `xiq.post_lro(path)` + `xiq.check_lro(url)` / `xiq.wait_lro(url)`.
 | `assign_location(payload)` | `POST /devices/location/:assign` |  |
 | `device_network_policy(device_id)` | `GET /devices/{device_id}/network-policy` |  |
 | `set_device_network_policy(device_id, payload)` | `PUT /devices/{device_id}/network-policy` |  |
-| `assign_network_policy(payload)` | `POST /devices/network-policy/:assign` |  |
-| `device_alarms(device_id, limit=…)` | `GET (paged) /devices/{device_id}/alarms` |  |
+| `assign_network_policy(payload)` | `POST /devices/network-policy/:assign` | payload may be a dict or a JSON string |
+| `device_alarms(device_id, limit=…, startTime=…, endTime=…)` | `GET (paged) /devices/{device_id}/alarms` | time filters pass through |
 | `wifi_interfaces(device_id, **params)` | `GET /devices/{device_id}/interfaces/wifi` | optional startTime / endTime |
 | `radio_information(limit=…)` | `GET (paged) /devices/radio-information` |  |
 
@@ -73,10 +74,13 @@ and `xiq.post_lro(path)` + `xiq.check_lro(url)` / `xiq.wait_lro(url)`.
 | `locations_tree(expand_children=…, parent_id=…)` | `GET /locations/tree` | parent_id= lists children of a site/building |
 | `init_location(organization, country)` | `POST /locations/:init` |  |
 | `create_location(payload)` | `POST /locations` |  |
-| `sites(limit=…)` | `GET (paged) /locations/site` |  |
+| `sites(limit=…, name=…)` | `GET (paged) /locations/site` | extra filters pass through |
+| `site_by_name(name)` | `GET (paged) /locations/site?name=` | first exact name match or None |
 | `create_site(payload)` | `POST /locations/site` |  |
 | `update_site(site_id, payload)` | `PUT /locations/site/{site_id}` |  |
-| `buildings(limit=…)` | `GET (paged) /locations/building` |  |
+| `buildings(limit=…, name=…)` | `GET (paged) /locations/building` | extra filters pass through |
+| `building_by_name(name)` | `GET (paged) /locations/building?name=` | unique exact match or None |
+| `floors_for_building(building_name)` | `GET /locations/building?name=` then `GET /locations/tree` | requires a unique building name |
 | `create_building(payload)` | `POST /locations/building` |  |
 | `floors(limit=…)` | `GET (paged) /locations/floor` |  |
 | `create_floor(payload)` | `POST /locations/floor` |  |
@@ -93,6 +97,7 @@ and `xiq.post_lro(path)` + `xiq.check_lro(url)` / `xiq.wait_lro(url)`.
 | `update_enduser(enduser_id, payload)` | `PUT /endusers/{enduser_id}` |  |
 | `delete_enduser(enduser_id)` | `DELETE /endusers/{enduser_id}` |  |
 | `usergroups(limit=…)` | `GET (paged) /usergroups` |  |
+| `usergroup_by_name(name)` | `GET (paged) /usergroups` | returns the first name match or None |
 | `pcg_users(policy_id, limit=…)` | `GET (paged) /pcgs/key-based/network-policy-{policy_id}/users` |  |
 | `add_pcg_users(policy_id, users)` | `POST /pcgs/key-based/network-policy-{policy_id}/users` |  |
 | `delete_pcg_users(policy_id, user_ids)` | `DELETE /pcgs/key-based/network-policy-{policy_id}/users` | DELETE with JSON body; API answers 202 |
@@ -102,7 +107,8 @@ and `xiq.post_lro(path)` + `xiq.check_lro(url)` / `xiq.wait_lro(url)`.
 | Method | API call | Notes |
 |---|---|---|
 | `network_policies(limit=…)` | `GET (paged) /network-policies` |  |
-| `deploy_config(device_ids, complete_update=…, activate_at_next_reboot=…, activation_delay_seconds=…)` | `POST /deployments` | sends ?async=true with the delta-update policy payload |
+| `network_policy_by_name(name)` | `GET (paged) /network-policies` | first name match or None |
+| `deploy_config(device_ids, complete_update=…, activate_at_next_reboot=…, activation_delay_seconds=…, wait=…)` | `POST /deployments` | wait=False returns the LRO Location URL; wait=True returns the status string |
 | `set_psk_password(ssid_id, password)` | `PUT (raw body) /ssids/{ssid_id}/psk/password` | body is the bare string, not JSON |
 
 ## CCGs (cloud config groups)
@@ -110,6 +116,7 @@ and `xiq.post_lro(path)` + `xiq.check_lro(url)` / `xiq.wait_lro(url)`.
 | Method | API call | Notes |
 |---|---|---|
 | `ccgs(limit=…)` | `GET (paged) /ccgs` |  |
+| `ccg_by_name(name)` | `GET (paged) /ccgs` | returns the first name match or None |
 | `create_ccg(payload)` | `POST /ccgs` |  |
 | `update_ccg(ccg_id, payload)` | `PUT /ccgs/{ccg_id}` |  |
 | `delete_ccg(ccg_id)` | `DELETE /ccgs/{ccg_id}` |  |
