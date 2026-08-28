@@ -619,8 +619,29 @@ class XIQ:
     def device_network_policy(self, device_id: int) -> dict:
         return self.get(f"/devices/{device_id}/network-policy")
 
-    def set_device_network_policy(self, device_id: int, payload: dict) -> Any:
-        return self.put(f"/devices/{device_id}/network-policy", json=payload)
+    def set_device_network_policy(
+        self,
+        device_id: int,
+        payload: dict | int | None = None,
+        *,
+        network_policy_id: int | None = None,
+    ) -> Any:
+        """PUT /devices/{id}/network-policy?networkPolicyId=.
+
+        ``payload`` may be the policy id or a dict with ``networkPolicyId``.
+        """
+        if isinstance(payload, int):
+            network_policy_id = payload
+        elif network_policy_id is None and isinstance(payload, dict):
+            network_policy_id = payload.get("networkPolicyId") or payload.get(
+                "network_policy_id"
+            )
+        if network_policy_id is None:
+            raise ValueError("network_policy_id is required")
+        return self.put(
+            f"/devices/{device_id}/network-policy",
+            networkPolicyId=network_policy_id,
+        )
 
     def assign_network_policy(self, payload: dict | str) -> Any:
         """POST /devices/network-policy/:assign. Accepts a dict or JSON string."""

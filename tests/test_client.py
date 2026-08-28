@@ -302,6 +302,19 @@ def test_network_policy_by_name(xiq):
 
 
 @responses.activate
+def test_set_device_network_policy_uses_query_param(xiq):
+    responses.add(
+        responses.PUT,
+        f"{XIQ_BASE_URL}/devices/4/network-policy",
+        json={"ok": True},
+        status=200,
+    )
+    xiq.set_device_network_policy(4, 9)
+    qs = str(responses.calls[0].request.url)
+    assert "networkPolicyId=9" in qs
+
+
+@responses.activate
 def test_device_alarms_pass_time_filters(xiq):
     responses.add(
         responses.GET,

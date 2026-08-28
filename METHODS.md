@@ -61,7 +61,7 @@ and `xiq.post_lro(path)` + `xiq.check_lro(url)` / `xiq.wait_lro(url)`.
 | `set_device_location(device_id, payload)` | `PUT /devices/{device_id}/location` |  |
 | `assign_location(payload)` | `POST /devices/location/:assign` |  |
 | `device_network_policy(device_id)` | `GET /devices/{device_id}/network-policy` |  |
-| `set_device_network_policy(device_id, payload)` | `PUT /devices/{device_id}/network-policy` |  |
+| `set_device_network_policy(device_id, network_policy_id)` | `PUT /devices/{device_id}/network-policy?networkPolicyId=` | also accepts a dict with networkPolicyId |
 | `assign_network_policy(payload)` | `POST /devices/network-policy/:assign` | payload may be a dict or a JSON string |
 | `device_alarms(device_id, limit=…, startTime=…, endTime=…)` | `GET (paged) /devices/{device_id}/alarms` | time filters pass through |
 | `wifi_interfaces(device_id, **params)` | `GET /devices/{device_id}/interfaces/wifi` | optional startTime / endTime |
