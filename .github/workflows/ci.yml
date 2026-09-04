@@ -20,6 +20,8 @@ jobs:
       - name: Install
         run: pip install -e ".[dev]"
       - name: Lint
-        run: ruff check src tests
+        run: ruff check src tests tools
+      - name: Docs are generated
+        run: python tools/gen_methods.py --check
       - name: Test
         run: pytest

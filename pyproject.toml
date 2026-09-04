@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xiq-client"
-version = "0.1.2"
+version = "0.1.3"
 description = "Unofficial ExtremeCloud IQ / Extreme Platform ONE API client: token auth, timeouts, retries, pagination."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -54,6 +54,9 @@ target-version = "py39"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]  # long mock payload lines
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
